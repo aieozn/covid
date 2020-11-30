@@ -1,0 +1,66 @@
+---
+title: "Projekt"
+author: "Kamil Jędrzejczak"
+date: "30 listopada 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Install libraries, include=FALSE}
+install.packages("dplyr",repos = "http://cran.us.r-project.org")
+
+library(dplyr, warn.conflicts = FALSE)
+library(ggplot2, warn.conflicts = FALSE)
+library(repr, warn.conflicts = FALSE)
+library(tidyr, warn.conflicts = FALSE)
+library(caret)
+```
+
+# Przygotowanie danych
+- Dopisanie identyfikatorów pacjenta dla wierszy z NA
+- Zamiana etykiet kolumn z greckimi literami
+- Zamiana dat na numerable
+- Usunięcie niepotrzebnych wskaźników (2019-nCoV nucleic acid detection). W przypadku drugiego parametru nie jestem pewny jak interpretować puste - wartości. Wartości wypełnione to tylko -1.
+
+### Przygowanie danych
+``` {r Preparing}
+previous_id = 1;
+loop_iterator = 1;
+
+data <- data %>% rename(`Interleukin 1B` = `Interleukin 1ß`)
+data <- data %>% rename(`Tumor necrosis factora` = `Tumor necrosis factorα`)
+data <- data %>% rename(`y-glutamyl transpeptidase` = `γ-glutamyl transpeptidase`)
+
+data <- data %>% 
+        mutate(nRE_DATE = as.numeric(RE_DATE)) %>%
+        mutate(`nAdmission time` = as.numeric(`Admission time`)) %>%
+        mutate(`nDischarge time` = as.numeric(`Discharge time`))
+
+data <- select(
+            data, 
+           -c(
+               "Admission time",
+               "Discharge time",
+               "2019-nCoV nucleic acid detection"
+           )
+          )
+
+for (record in data$PATIENT_ID) {
+    
+    if (is.na(record)) {
+        data$PATIENT_ID[loop_iterator] = previous_id;
+    } else {
+        previous_id = record;
+    }
+
+    loop_iterator <- loop_iterator + 1;
+}
+```
+
+### Podgląd
+``` {r Preview}
+summary(data)
+```
