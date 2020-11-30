@@ -1,22 +1,45 @@
 ---
 title: "Projekt"
 author: "Kamil Jędrzejczak"
-date: "30 listopada 2020"
-output: html_document
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true
 ---
+
+# Podsumowanie analizy
+
+Celem projektu jest analiza próbek krwi pacjentów chorych na COVID-19 w celu określenia głównych czynników ryzyka oraz potencjalnych markerów pozwalających przewidzieć szanse na przeżycie.
+
+Analiza składa się z trzech podstawowych częsci:
+
+1. Analiza zależności wartości współczynników krwi od skutku choroby. 
+W tej sekcji dla każdego z dostępnych parametrów wygenerowana została graficzna reprezentacja jego zależności od wartości outcome. Spośród wyników wyodrębniono najciekawsze wykresy (obrazujące interesujące zależności). Do wyodrębnienia najciekawszysch wyników wykorzystano wpspółczynnik korelacji, ale także analizę wizualną.
+Wyniki pierwszej z analiz okazały się bardzo obiecujące. Dość duża część współczynników krwi przejawia związek ze skutkiem choroby. Korelacja dla kilku współczynników przekracza 0.7. 
+
+2. W kolejnym kroku przeanalizowano zmianę współczynników krwi w czasie. W tym wypadku pod uwaglę brano tylko pacjentów, którzy zmarli w wyniku choroby. Celem analizy, było wyszukanie takich współczynników, które zmieniają się wraz z pogarszającym się stanem zdrowia pacjenta. Długość pobytu w szpitalu przed zgonem różniła się mocno w zależności od pacjenta. Dlatego też analizę zdominowały dane z dnia śmierci lub kilku dni przed zgonem. Danych sprzed dziesięciu lub więcej dni od śmierci było zdecydowanie mniej. 
+Utworzenie analizy zmiany parametrów krwi w czasie wydawało się zasadne, w praktyce jednak wyniki analizy są zdecydowanie mniej zadowalające niż w pierwszym przypadku. Największa korelacja pomiędzy wynikiem choroby a zmianą parametru występuje dla "Prothrombin activity" oraz "antithrombin". W obu przypadkach korelacja jest niższa niż 0.25.
+
+3. Ostatni krok to próba utworzenie klasyfikatora, pozwalającego na podstawie wyników badań krwi przydzielać pacjentów do ogpowiedniej grupy ryzyka. Jako klasyfikator wykorzystano algorytm random forest. Współczynniki algorytmu zostały zoptymalizowane na zbiorze walidującym. Niewielka ilość danych oraz klasyfikacja binarna sprawiły jednak, że wyniki są bardzo podobne bez względu na parametry sterujące uczeniem. Wyniki klasyfikacji dla różnych wartości parametrów pokrywają się. Ciężko więc zaobserwować tendencję poprawy modelu lub jego przeuczenia. Skuteczność modelu jest jednak zadowalająca 'Accuracy' dla zbioru testowego to około 95% (3 pomyłki). 
+Wartości puste dla każdego ze zbiorów (treningowy, walidujący i testowy) zostały zastąpione średnimi wartościami z tego samego zbioru.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r Install libraries, include=FALSE}
+### Instalacja bibliotek
+```{r Install libraries}
 install.packages("dplyr",repos = "http://cran.us.r-project.org")
+install.packages('e1071', repos = "http://cran.us.r-project.org")
 
-library(dplyr, warn.conflicts = FALSE)
-library(ggplot2, warn.conflicts = FALSE)
-library(repr, warn.conflicts = FALSE)
-library(tidyr, warn.conflicts = FALSE)
-library(caret)
+suppressMessages(library("readxl", warn.conflicts = FALSE))
+suppressMessages(library(dplyr, warn.conflicts = FALSE))
+suppressMessages(library(ggplot2, warn.conflicts = FALSE))
+suppressMessages(library(ggpubr, warn.conflicts = FALSE))
+suppressMessages(library(repr, warn.conflicts = FALSE))
+suppressMessages(library(tidyr, warn.conflicts = FALSE))
+suppressMessages(library(caret))
+suppressMessages(library(randomForest))
 ```
 
 # Przygotowanie danych
@@ -27,27 +50,34 @@ library(caret)
 
 ### Przygowanie danych
 ``` {r Preparing}
+# Wczytanie pliku xlsx
+data <- read_excel("data.xlsx")
+
 previous_id = 1;
 loop_iterator = 1;
 
+# Usunięcie liter greckich
 data <- data %>% rename(`Interleukin 1B` = `Interleukin 1ß`)
 data <- data %>% rename(`Tumor necrosis factora` = `Tumor necrosis factorα`)
 data <- data %>% rename(`y-glutamyl transpeptidase` = `γ-glutamyl transpeptidase`)
 
+# Zmiana formatu daty
 data <- data %>% 
         mutate(nRE_DATE = as.numeric(RE_DATE)) %>%
         mutate(`nAdmission time` = as.numeric(`Admission time`)) %>%
         mutate(`nDischarge time` = as.numeric(`Discharge time`))
 
+# Usunięcie zbędnych kolumn
 data <- select(
-            data, 
-           -c(
-               "Admission time",
-               "Discharge time",
-               "2019-nCoV nucleic acid detection"
-           )
-          )
+  data, 
+ -c(
+     "Admission time",
+     "Discharge time",
+     "2019-nCoV nucleic acid detection"
+ )
+)
 
+# Dopisanie brakujących identyfikatorów pacjenta
 for (record in data$PATIENT_ID) {
     
     if (is.na(record)) {
@@ -63,4 +93,418 @@ for (record in data$PATIENT_ID) {
 ### Podgląd
 ``` {r Preview}
 summary(data)
+```
+
+# Graficzna analiza
+W tym kroku, w celu zapoznania się lepiej z danymi, został wygenerowany dla każdego atrybutu wykres zależności outcome od tego atrybutu. Poniżej kilka, moim zdaniem, najciekawszych wraz z komentarzem.
+
+### Generowanie wszystkich wykresow
+``` {r GenAll}
+options(repr.plot.width=16, repr.plot.height=10)
+
+show <- function() {
+    for (column_name in colnames(data)) {
+
+        kv <- data %>%
+                select(!!as.name(column_name), outcome) %>%
+                filter(!is.na(!!as.name(column_name))) %>%
+                count(!!as.name(column_name), outcome)
+
+        print(ggplot(kv, aes(x=!!as.name(column_name), y=outcome, size = n))
+              + geom_point(alpha=0.7)
+              + ggtitle(paste("Zależnośc wyniku badania od atrybutu: ", column_name))
+              + theme(text = element_text(size=20))
+             )
+    }
+}
+
+# Wywołanie zakomentowane ponieważ tylko część wykresów jest interesującą a są one opisane w następnej sekcji
+# show()
+```
+
+``` {r interesting1, include=FALSE}
+
+plots = list()
+interesting_cols = c(
+    "age",
+    "gender",
+    "Hypersensitive cardiac troponinI",
+    "Prothrombin time",
+    "albumin",
+    "Direct bilirubin",
+    "Total cholesterol",
+    "Amino-terminal brain natriuretic peptide precursor(NT-proBNP)",
+    "Lactate dehydrogenase",
+    "neutrophils count"
+)
+i = 1
+
+for (column_name in interesting_cols) {
+    kv <- data %>%
+                select(!!as.name(column_name), outcome) %>%
+                filter(!is.na(!!as.name(column_name))) %>%
+                count(!!as.name(column_name), outcome)
+
+    plots[[i]] <- (ggplot(kv, aes(x=!!as.name(column_name), y=outcome, size = n))
+          + geom_point(alpha=0.7)
+          + ggtitle(paste("Zależnośc wyniku badania od atrybutu: ", column_name))
+          + theme(text = element_text(size=15))
+         )
+    
+    i = i + 1
+}
+```
+
+### Najciekawsze wykresy
+``` {r interesting2, fig.width=18, fig.height=35}
+
+ggarrange(
+    plots[[1]],
+    plots[[2]],
+    plots[[3]],
+    plots[[4]],
+    plots[[5]],
+    plots[[6]],
+    plots[[7]],
+    plots[[8]],
+    plots[[9]],
+    plots[[10]],
+    ncol = 2, nrow = 5)
+```
+
+### Korelacje atrybutów
+Z wygenerowanych wykresów można wyodrębnić te interesujące nie polegając na intuicji a wykorzystując współczynnik korelacji. Poniżej znajdują się posortowane wzgędem współczynnika korelacji wykresy zależności.
+
+``` {r corelations, fig.width=18, fig.height=8}
+korelacje = {}
+
+for (column_name in colnames(select(data, -c("outcome", "PATIENT_ID", "RE_DATE")))) {
+    kv <- data %>%
+            select(!!as.name(column_name), outcome) %>%
+            filter(!is.na(!!as.name(column_name)))
+    
+    korelacje[column_name] <- abs(cor(kv$outcome, kv %>% select(all_of(column_name))))
+}
+
+ordered <- korelacje[order(unlist(korelacje))]
+
+options(repr.plot.width=16, repr.plot.height=6)
+names <- names(rev(ordered))[1:6]
+
+for (column_name in names) {
+    kv <- data %>%
+                select(!!as.name(column_name), outcome) %>%
+                filter(!is.na(!!as.name(column_name))) %>%
+                count(!!as.name(column_name), outcome)
+
+    plot <- ggplot(kv, aes(x=!!as.name(column_name), y=outcome, size = n)) +
+            geom_point() +
+            geom_smooth(method="lm") +
+            ggtitle(paste("Zależnośc wyniku badania od atrybutu: ", column_name, ". Korelacja: ", ordered[column_name])) + 
+            theme(text = element_text(size=15))
+    
+    suppressMessages(print(plot))
+}
+```
+
+
+# Zmiana parametrów w czasie
+Poza prostymi zależnościami pomiędzy współczynnikami krwi, a skutkiem choroby warto także zastanowić się nad wpływem choroby na zmiany tych współczynników. 
+Wyniki poniższej analizy przedstawiąją zmianę parametrów krwi przed zgonem. Skrajny prawy słupek oznacza współczynniki krwi u pacjenta w dniu zgonu (dla wielu pomiarów wyciągana jest średnia). Przeciętnie, pacjenci trafiali do szpitala kilka dni przed zgonem, dlatego wyniki badań krwi pacjentów kilkanaście dni przed zgonem (lewa stronwa wykresu) są szczątkowe.
+
+### Przygotowanie danych
+``` {r generatingTim1, cache=TRUE}
+dead <- data %>%
+            filter(outcome == 1) %>%
+            select(c(1, 2, 5:(length(data) - 3) ))
+            
+
+patients_data = NA
+initialized = FALSE
+
+for (patient_id in dead$PATIENT_ID) {
+    patient_data <- dead %>%
+                    filter(PATIENT_ID==patient_id) %>%
+                    mutate(day=format(RE_DATE, format='%m/%d/%Y')) %>%
+                    group_by(day, PATIENT_ID) %>%
+                    summarise_each(funs(mean(., na.rm = TRUE))) %>%
+                    arrange(desc(RE_DATE))
+    
+    patient_data$day = seq.int(nrow(patient_data))
+    
+    if (!initialized) {
+        patients_data = patient_data
+        initialized =TRUE
+    } else {
+        patients_data = union(patients_data, patient_data)
+    }
+    
+}
+
+max_day <- max(patients_data["day"])
+patients_data <- patients_data %>% select(c(1, 2, 5:length(patients_data)))
+patients_data <- patients_data %>% mutate(day=(max_day - day + 1))
+patients_data <- ungroup(patients_data)
+```
+
+Poniższy skrypt przedstawia sposób wygenerowania wszystkich wykresów. Podobnie jak w przypadku poprzedniej analizy, spośród wszystkich wybrane i zaprezentowane zostały te najbardziej interesujące.
+
+### Generowanie danych
+``` {r generatingTim2}
+options(repr.plot.width=16, repr.plot.height=10)
+hide_cols = c("day", "PATIENT_ID")
+
+show <- function(to_show) {
+    for (column_name in to_show) {
+        
+        if (column_name %in% hide_cols) {
+            next
+        }
+
+        kv <- patients_data %>%
+                select(!!as.name(column_name), day) %>%
+                filter(!is.na(!!as.name(column_name)))
+
+        print(
+                ggplot(kv, aes(x=day, y=!!as.name(column_name)))
+              + geom_point()
+              + ggtitle(paste("Zależnośc wyniku badania od atrybutu: ", column_name))
+              + theme(text = element_text(size=20))
+             )
+    }
+}
+
+# show(colnames(patients_data))
+```
+
+### Najciekawsze wykresy
+``` {r interestingTimResults, fig.width=15, fig.height=8}
+options(repr.plot.width=15, repr.plot.height=8)
+
+show(c("creatinine", "Lactate dehydrogenase"))
+```
+
+Podobnie jak w pierwszej analizie, tutaj także można wybrać najciekawsze z wykresów na podstawie współcznnika regresji
+### Najciekawsze wykresy - regresja
+``` {r interestingTimRegresionResults, fig.width=15, fig.height=8}
+korelacje = {}
+hide_cols = c("day", "PATIENT_ID")
+
+for (column_name in colnames(patients_data)) {
+    
+    if (column_name %in% hide_cols) {
+        next
+    }
+    
+    kv <- patients_data %>%
+            select(!!as.name(column_name), day) %>%
+            filter(!is.na(!!as.name(column_name)))
+    
+    
+    
+    korelacje[column_name] <- abs(cor(kv$day, kv %>% select(all_of(column_name))))
+}
+
+ordered <- korelacje[order(unlist(korelacje))]
+
+options(repr.plot.width=16, repr.plot.height=6)
+names <- names(rev(ordered))[1:2]
+
+for (column_name in names) {
+    kv <- patients_data %>%
+                select(!!as.name(column_name), day) %>%
+                filter(!is.na(!!as.name(column_name)))
+
+    plot <- ggplot(kv, aes(x=day, y=!!as.name(column_name))) +
+            geom_point() +
+            geom_smooth(method="lm") +
+            ggtitle(paste("Zależnośc dnia od atrybutu: ", column_name, ".Korelacja: ", ordered[column_name])) + 
+            theme(text = element_text(size=15))
+    
+    suppressMessages(print(plot))
+}
+```
+
+Wskaźnik ten okazuje się niską korelacją.
+
+
+# Klasyfikacja
+W tej sekcji podjęto próbę utworzenia modelu klasyfikującego pacjentów ze względu na skutek choroby oraz dokonano oceny klasyfikatora.
+
+### Przygotowanie danych do klasyfikacji
+``` {r classification1}
+# Usunięcie zbędnych kolumn
+classification_data <- data %>%
+        select(-c(`nAdmission time`, `nDischarge time`, `RE_DATE`, `nRE_DATE`))
+
+# Zmiana typu columny outcome
+i = 1
+for (row in classification_data$outcome) {
+    if (row==1) {
+        classification_data$outcome[i] = "dead"
+    } else {
+        classification_data$outcome[i] = "alive"
+    }
+    
+    i = i + 1
+}
+
+# Grupowanie danych i uśrednienie wyników
+classification_data <- classification_data %>% 
+                        group_by(PATIENT_ID, outcome) %>%
+                        summarise_each(funs(mean(., na.rm = TRUE))) %>%
+                        ungroup() %>%
+                        select(-c("PATIENT_ID"))
+```
+
+
+### Podział zbioru na 3 zbiory (treningowy, walidacyjny, testowy)
+``` {r classification2}
+set.seed(23)
+
+inTraining <- 
+    createDataPartition(
+        y = classification_data$outcome,
+        p = .7,
+        list = FALSE)
+
+classification_data_training <- classification_data[ inTraining,]
+nottraining  <- classification_data[-inTraining,]
+
+inTesting <- 
+    createDataPartition(
+        y = nottraining$outcome,
+        p = .5,
+        list = FALSE)
+
+classification_data_testing = nottraining[inTesting, ]
+classification_data_validating = nottraining[-inTesting, ]
+```
+
+### Uzupełnienie wartości pustych średnimi wartościami (osobno dla każdego zbioru)
+``` {r classification3}
+for(i in 4:ncol(classification_data_training)){
+    mean <-  mean(classification_data_training[[i]], na.rm = TRUE)
+    classification_data_training[is.na(classification_data_training[[i]]),i] <- mean
+}
+
+for(i in 4:ncol(classification_data_validating)){
+    mean <-  mean(classification_data_validating[[i]], na.rm = TRUE)
+    classification_data_validating[is.na(classification_data_validating[[i]]),i] <- mean
+}
+
+for(i in 4:ncol(classification_data_testing)){
+    mean <-  mean(classification_data_testing[[i]], na.rm = TRUE)
+    classification_data_testing[is.na(classification_data_testing[[i]]),i] <- mean
+}
+```
+
+### Szukanie najlepszych parametrów dla algorytmu random forest
+``` {r classification33}
+set.seed(128)
+
+control <- trainControl(
+    method="repeatedcv", 
+    number=2, 
+    repeats=2,
+    allowParallel = TRUE)
+
+df <- data.frame(set=character(),
+                 ntree=integer(), 
+                 mtry=integer(),
+                 score=double(),
+                 stringsAsFactors=FALSE) 
+
+for (ntree in c(5, 10, 15, 20, 25, 30)){
+    
+    for (mtry in c(1:10)) {
+        set.seed(123);
+        
+        fit <- train(
+            outcome ~ .,
+            data = classification_data_training,
+            method = "rf",
+            trControl = control,
+            metric='Accuracy',
+            tuneGrid = expand.grid(mtry=c(mtry)),
+            ntree = ntree
+        )
+        
+        rfClasses <- predict(fit, newdata = classification_data_validating)
+        rtClasses <- predict(fit, newdata = classification_data_training)
+        fm <- confusionMatrix(table(rfClasses, classification_data_validating$outcome))
+        tm <- confusionMatrix(table(rtClasses, classification_data_training$outcome))
+        
+        new_row <- data.frame("validating", mtry, ntree, fm$overall['Accuracy'])
+        names(new_row)<-c("set", "mtry", "ntry", "score")
+        df <- rbind(df, new_row)
+        
+        new_row <- data.frame("training", mtry, ntree, tm$overall['Accuracy'])
+        names(new_row)<-c("set", "mtry", "ntry", "score")
+        df <- rbind(df, new_row)
+    }
+}
+```
+
+
+### Wizualizacja zależności parametrów na jakość klasyfikacji 
+``` {r classification44}
+dff <- df %>% mutate(grouped_id = row_number()) %>% spread('mtry', 'score')  %>% 
+            select(-c("grouped_id")) %>%
+            group_by(set, ntry) %>% 
+            summarise_each(funs(mean(., na.rm = TRUE))) %>%
+            ungroup()
+
+vall <- dff %>% filter(set=="training")
+plt <- ggplot(dff %>% filter(set=="training"), aes(x=ntry))
+
+for (i in c(1:10)) {
+    plt <- plt + 
+        geom_line(aes(y=!!as.name(i))) +
+        geom_text(aes(x = 4, y = vall[[toString(i)]][[1]], label = paste("mtry = ", toString(i))), size=6) +
+        geom_point(aes(y=!!as.name(i)))
+
+}
+print(plt + theme(text = element_text(size=20)) + ggtitle("Wyniki dla zbioru treningowego"))
+
+
+
+vall <- dff %>% filter(set=="validating")
+plt <- ggplot(vall, aes(x=ntry))
+
+for (i in c(1:10)) {
+    plt <- plt + 
+                geom_line(aes(y=!!as.name(i))) +
+                geom_text(aes(x = 4, y = vall[[toString(i)]][[1]], label = paste("mtry = ", toString(i))), size=6) +
+                geom_point(aes(y=!!as.name(i)))
+}
+print(plt + theme(text = element_text(size=20)) + ggtitle("Wyniki dla zbioru walidacyjnego"))
+```
+
+### Ocena klasyfikacji zbioru testowego
+``` {r classification4}
+fit <- train(
+    outcome ~ .,
+    data = classification_data_testing,
+    method = "rf",
+    trControl = control,
+    metric='Accuracy',
+    tuneGrid = expand.grid(mtry=c(3)),
+    ntree = 30
+)
+
+confusionMatrix(table(rfClasses, classification_data_testing$outcome), positive="dead")$table
+confusionMatrix(table(rfClasses, classification_data_testing$outcome))$overall['Accuracy']
+confusionMatrix(table(rfClasses, classification_data_testing$outcome))$byClass['Pos Pred Value']
+confusionMatrix(table(rfClasses, classification_data_testing$outcome))$byClass['Neg Pred Value']
+```
+
+### Wybrane miary klasyfikacji to: 
+- Macierz pomyłek, pokazuje dokładnie (nie tylko procentowo) dokonane błędy
+- Skuteczność pozwala porównywać bezpośrednio 2 wyniki algorytmu jednym współczynnikiem
+- Pos Pred Value i Neg Pred Value - podobnie jak wyżej, jednak ze względu na specyfikę problemu, prawodopodobnie bardziej istotne będzie maksymalizowanie wskaźnika Pos Pred Value
+
+### Ocena ważności współczynników w klasyfikatorze
+``` {r classification5}
+varImp(fit)
 ```
